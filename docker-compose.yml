@@ -1,0 +1,107 @@
+x-airflow-common: &airflow-common
+  build: ./airflow
+  image: batch-data-pipeline/airflow:local
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+    PYTHONPATH: /opt/airflow
+    DATA_DIR: /opt/airflow/data
+    ROWS_PER_DAY: ${ROWS_PER_DAY:-1000000}
+    MAX_INVALID_RATIO: ${MAX_INVALID_RATIO:-0.05}
+    SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+    CLICKHOUSE_HOST: clickhouse
+    CLICKHOUSE_PORT: "8123"
+    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-pipeline}
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-pipeline}
+    CLICKHOUSE_DB: analytics
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./pipeline:/opt/airflow/pipeline
+    - ./data:/opt/airflow/data
+    - ./logs:/opt/airflow/logs
+  depends_on: &airflow-depends-on
+    postgres:
+      condition: service_healthy
+    clickhouse:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-pipeline}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-pipeline}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client -u \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'SELECT 1'"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        (airflow users create --username admin --password admin \
+          --firstname Admin --lastname User --role Admin --email admin@example.com \
+          || echo "admin user already exists")
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      retries: 10
+    depends_on:
+      <<: *airflow-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      <<: *airflow-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  clickhouse-data:

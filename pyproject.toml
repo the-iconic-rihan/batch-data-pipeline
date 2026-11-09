@@ -1,0 +1,20 @@
+[project]
+name = "batch-data-pipeline"
+version = "1.0.0"
+description = "Airflow + PySpark + ClickHouse batch pipeline with data-quality gates and idempotent loads"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pipeline"]
+known-third-party = ["airflow"]
